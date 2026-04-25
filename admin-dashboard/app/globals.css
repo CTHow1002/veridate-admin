@@ -44,6 +44,11 @@ button:hover {
   background: var(--accent-strong);
 }
 
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .secondary-button {
   background: white;
   color: var(--ink);
@@ -249,15 +254,20 @@ dd {
   gap: 10px;
 }
 
-.file-grid a {
+.file-grid a,
+.file-grid span {
   min-height: 40px;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.file-grid a {
   color: var(--accent);
   text-decoration: none;
-  font-weight: 700;
 }
 
 .file-grid a:hover {
@@ -267,7 +277,6 @@ dd {
 .file-grid .missing-file {
   color: var(--muted);
   background: #f3f4f5;
-  pointer-events: none;
 }
 
 .review-panel {

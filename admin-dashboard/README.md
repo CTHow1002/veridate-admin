@@ -1,8 +1,10 @@
 # VeriDate Admin Dashboard
 
-Simple private web dashboard for reviewing pending VeriDate verification submissions.
+Simple private Next.js dashboard for reviewing pending VeriDate verification submissions.
 
-## Setup
+The Supabase service role key is used only in server-side route handlers and server-only libraries. It is never sent to browser/client components.
+
+## Local Setup
 
 1. Copy `.env.example` to `.env`.
 2. Fill in:
@@ -12,7 +14,13 @@ Simple private web dashboard for reviewing pending VeriDate verification submiss
    - `ADMIN_PASSWORD`
    - `ADMIN_SESSION_SECRET`
 3. If needed, run `supabase.sql` in the Supabase SQL Editor.
-4. Start the dashboard:
+4. Install dependencies:
+
+```bash
+npm install
+```
+
+5. Start the dashboard:
 
 ```bash
 npm run dev
@@ -20,4 +28,29 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-The service role key is used only by `server.js` and is never sent to the browser.
+## Build
+
+```bash
+npm run typecheck
+npm run build
+```
+
+## Vercel Deployment
+
+Create a Vercel project using this folder as the app root:
+
+```text
+admin-dashboard
+```
+
+Add these environment variables in Vercel Project Settings:
+
+```text
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+ADMIN_USERNAME
+ADMIN_PASSWORD
+ADMIN_SESSION_SECRET
+```
+
+Do not prefix secrets with `NEXT_PUBLIC_`. Any `NEXT_PUBLIC_` variable can be exposed to the browser.

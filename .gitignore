@@ -1,0 +1,5 @@
+.DS_Store
+admin-dashboard/.env
+admin-dashboard/.next/
+admin-dashboard/node_modules/
+admin-dashboard/tsconfig.tsbuildinfo

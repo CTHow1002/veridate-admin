@@ -59,21 +59,18 @@ drop policy if exists "Users can create own verification submission" on public.v
 create policy "Users can create own verification submission"
 on public.verification_submissions
 for insert
-to authenticated
 with check (auth.uid() = user_id);
 
 drop policy if exists "Users can read own verification submission" on public.verification_submissions;
 create policy "Users can read own verification submission"
 on public.verification_submissions
 for select
-to authenticated
 using (auth.uid() = user_id);
 
 drop policy if exists "Users can resubmit own verification submission" on public.verification_submissions;
 create policy "Users can resubmit own verification submission"
 on public.verification_submissions
 for update
-to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
@@ -85,6 +82,24 @@ add column if not exists latitude double precision;
 
 alter table public.profiles
 add column if not exists longitude double precision;
+
+alter table public.profiles
+add column if not exists is_online boolean not null default false;
+
+alter table public.profiles
+add column if not exists last_seen_at timestamptz;
+
+alter table public.profiles
+add column if not exists is_banned boolean not null default false;
+
+alter table public.profiles enable row level security;
+
+drop policy if exists "Users can update own profile" on public.profiles;
+create policy "Users can update own profile"
+on public.profiles
+for update
+using (auth.uid() = id)
+with check (auth.uid() = id);
 
 create table if not exists public.dating_filters (
   id uuid primary key default gen_random_uuid(),
@@ -164,21 +179,18 @@ drop policy if exists "Users can read own dating filters" on public.dating_filte
 create policy "Users can read own dating filters"
 on public.dating_filters
 for select
-to authenticated
 using (auth.uid() = user_id);
 
 drop policy if exists "Users can create own dating filters" on public.dating_filters;
 create policy "Users can create own dating filters"
 on public.dating_filters
 for insert
-to authenticated
 with check (auth.uid() = user_id);
 
 drop policy if exists "Users can update own dating filters" on public.dating_filters;
 create policy "Users can update own dating filters"
 on public.dating_filters
 for update
-to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
@@ -197,14 +209,12 @@ drop policy if exists "Users can create own profile actions" on public.profile_a
 create policy "Users can create own profile actions"
 on public.profile_actions
 for insert
-to authenticated
 with check (auth.uid() = actor_user_id);
 
 drop policy if exists "Users can read own profile actions" on public.profile_actions;
 create policy "Users can read own profile actions"
 on public.profile_actions
 for select
-to authenticated
 using (auth.uid() = actor_user_id);
 
 create table if not exists public.matches (
@@ -222,8 +232,435 @@ drop policy if exists "Users can read their matches" on public.matches;
 create policy "Users can read their matches"
 on public.matches
 for select
-to authenticated
 using (auth.uid() = user_one_id or auth.uid() = user_two_id);
+
+drop policy if exists "Matched users can read each other profiles" on public.profiles;
+create policy "Matched users can read each other profiles"
+on public.profiles
+for select
+using (
+  auth.uid() = id
+  or exists (
+    select 1
+    from public.matches
+    where (matches.user_one_id = auth.uid() and matches.user_two_id = profiles.id)
+       or (matches.user_two_id = auth.uid() and matches.user_one_id = profiles.id)
+  )
+);
+
+-- Chat support for matched users.
+create table if not exists public.messages (
+  id uuid primary key default gen_random_uuid(),
+  match_id uuid not null references public.matches(id) on delete cascade,
+  sender_id uuid not null references public.profiles(id) on delete cascade,
+  body text not null check (length(trim(body)) > 0),
+  is_read boolean not null default false,
+  delivered_at timestamptz,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.messages
+add column if not exists delivered_at timestamptz;
+
+alter table public.messages
+add column if not exists read_at timestamptz;
+
+create index if not exists messages_match_created_at_idx
+on public.messages (match_id, created_at);
+
+alter table public.messages enable row level security;
+
+create or replace function public.set_user_presence(p_is_online boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  update public.profiles
+  set
+    is_online = p_is_online,
+    last_seen_at = now()
+  where id = auth.uid();
+end;
+$$;
+
+grant execute on function public.set_user_presence(boolean) to authenticated;
+
+create table if not exists public.blocks (
+  id uuid primary key default gen_random_uuid(),
+  blocker_user_id uuid not null references public.profiles(id) on delete cascade,
+  blocked_user_id uuid not null references public.profiles(id) on delete cascade,
+  match_id uuid references public.matches(id) on delete set null,
+  reason text,
+  created_at timestamptz not null default now(),
+  check (blocker_user_id <> blocked_user_id),
+  unique (blocker_user_id, blocked_user_id)
+);
+
+alter table public.blocks
+add column if not exists blocker_user_id uuid references public.profiles(id) on delete cascade;
+
+alter table public.blocks
+add column if not exists blocked_user_id uuid references public.profiles(id) on delete cascade;
+
+alter table public.blocks
+add column if not exists match_id uuid references public.matches(id) on delete set null;
+
+alter table public.blocks
+add column if not exists reason text;
+
+alter table public.blocks
+add column if not exists created_at timestamptz not null default now();
+
+create unique index if not exists blocks_blocker_blocked_unique_idx
+on public.blocks (blocker_user_id, blocked_user_id);
+
+drop policy if exists "Matched users can read messages" on public.messages;
+create policy "Matched users can read messages"
+on public.messages
+for select
+using (
+  exists (
+    select 1
+    from public.matches m
+    where m.id = messages.match_id
+      and auth.uid() in (m.user_one_id, m.user_two_id)
+  )
+);
+
+drop policy if exists "Matched users can send messages" on public.messages;
+create policy "Matched users can send messages"
+on public.messages
+for insert
+with check (
+  auth.uid() = sender_id
+  and exists (
+    select 1
+    from public.matches m
+    where m.id = messages.match_id
+      and auth.uid() in (m.user_one_id, m.user_two_id)
+  )
+  and not exists (
+    select 1
+    from public.blocks b
+    where exists (
+      select 1
+      from public.matches m
+      where m.id = messages.match_id
+        and (
+          (b.blocker_user_id = m.user_one_id and b.blocked_user_id = m.user_two_id)
+          or (b.blocker_user_id = m.user_two_id and b.blocked_user_id = m.user_one_id)
+        )
+    )
+  )
+);
+
+drop policy if exists "Matched users can mark messages read" on public.messages;
+create policy "Matched users can mark messages read"
+on public.messages
+for update
+using (
+  exists (
+    select 1
+    from public.matches m
+    where m.id = messages.match_id
+      and auth.uid() in (m.user_one_id, m.user_two_id)
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.matches m
+    where m.id = messages.match_id
+      and auth.uid() in (m.user_one_id, m.user_two_id)
+  )
+);
+
+create or replace function public.mark_match_messages_delivered(p_match_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  if not exists (
+    select 1
+    from public.matches
+    where id = p_match_id
+      and (user_one_id = auth.uid() or user_two_id = auth.uid())
+  ) then
+    raise exception 'Not allowed';
+  end if;
+
+  update public.messages
+  set delivered_at = coalesce(delivered_at, now())
+  where match_id = p_match_id
+    and sender_id <> auth.uid();
+end;
+$$;
+
+grant execute on function public.mark_match_messages_delivered(uuid) to authenticated;
+
+create or replace function public.mark_match_messages_read(p_match_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  if not exists (
+    select 1
+    from public.matches
+    where id = p_match_id
+      and (user_one_id = auth.uid() or user_two_id = auth.uid())
+  ) then
+    raise exception 'Not allowed';
+  end if;
+
+  update public.messages
+  set
+    delivered_at = coalesce(delivered_at, now()),
+    read_at = coalesce(read_at, now()),
+    is_read = true
+  where match_id = p_match_id
+    and sender_id <> auth.uid();
+end;
+$$;
+
+grant execute on function public.mark_match_messages_read(uuid) to authenticated;
+
+create table if not exists public.user_blocks (
+  id uuid primary key default gen_random_uuid(),
+  blocker_user_id uuid not null references public.profiles(id) on delete cascade,
+  blocked_user_id uuid not null references public.profiles(id) on delete cascade,
+  match_id uuid references public.matches(id) on delete set null,
+  reason text,
+  created_at timestamptz not null default now(),
+  check (blocker_user_id <> blocked_user_id),
+  unique (blocker_user_id, blocked_user_id)
+);
+
+alter table public.user_blocks enable row level security;
+
+drop policy if exists "Users can create own blocks" on public.user_blocks;
+create policy "Users can create own blocks"
+on public.user_blocks
+for insert
+with check (auth.uid() = blocker_user_id);
+
+drop policy if exists "Users can read own blocks" on public.user_blocks;
+create policy "Users can read own blocks"
+on public.user_blocks
+for select
+using (auth.uid() = blocker_user_id);
+
+drop policy if exists "Users can update own blocks" on public.user_blocks;
+create policy "Users can update own blocks"
+on public.user_blocks
+for update
+using (auth.uid() = blocker_user_id)
+with check (auth.uid() = blocker_user_id);
+
+create table if not exists public.blocks (
+  id uuid primary key default gen_random_uuid(),
+  blocker_user_id uuid not null references public.profiles(id) on delete cascade,
+  blocked_user_id uuid not null references public.profiles(id) on delete cascade,
+  match_id uuid references public.matches(id) on delete set null,
+  reason text,
+  created_at timestamptz not null default now(),
+  check (blocker_user_id <> blocked_user_id),
+  unique (blocker_user_id, blocked_user_id)
+);
+
+alter table public.blocks enable row level security;
+
+drop policy if exists "Users can create own blocks" on public.blocks;
+create policy "Users can create own blocks"
+on public.blocks
+for insert
+with check (auth.uid() = blocker_user_id);
+
+drop policy if exists "Users can read own blocks" on public.blocks;
+create policy "Users can read own blocks"
+on public.blocks
+for select
+using (auth.uid() = blocker_user_id or auth.uid() = blocked_user_id);
+
+drop policy if exists "Users can update own blocks" on public.blocks;
+create policy "Users can update own blocks"
+on public.blocks
+for update
+using (auth.uid() = blocker_user_id)
+with check (auth.uid() = blocker_user_id);
+
+create table if not exists public.user_reports (
+  id uuid primary key default gen_random_uuid(),
+  reporter_user_id uuid not null references public.profiles(id) on delete cascade,
+  reported_user_id uuid not null references public.profiles(id) on delete cascade,
+  match_id uuid references public.matches(id) on delete set null,
+  reason text not null,
+  created_at timestamptz not null default now(),
+  check (reporter_user_id <> reported_user_id)
+);
+
+alter table public.user_reports enable row level security;
+
+drop policy if exists "Users can create own reports" on public.user_reports;
+create policy "Users can create own reports"
+on public.user_reports
+for insert
+with check (auth.uid() = reporter_user_id);
+
+drop policy if exists "Users can read own reports" on public.user_reports;
+create policy "Users can read own reports"
+on public.user_reports
+for select
+using (auth.uid() = reporter_user_id);
+
+create table if not exists public.reports (
+  id uuid primary key default gen_random_uuid(),
+  reporter_user_id uuid not null references public.profiles(id) on delete cascade,
+  reported_user_id uuid not null references public.profiles(id) on delete cascade,
+  match_id uuid references public.matches(id) on delete set null,
+  reason text not null,
+  details text,
+  status text not null default 'open' check (status in ('open', 'dismissed', 'warned', 'banned')),
+  moderation_notes text,
+  action_taken text,
+  reviewed_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (reporter_user_id <> reported_user_id)
+);
+
+alter table public.reports
+add column if not exists reporter_user_id uuid references public.profiles(id) on delete cascade;
+
+alter table public.reports
+add column if not exists reported_user_id uuid references public.profiles(id) on delete cascade;
+
+alter table public.reports
+add column if not exists match_id uuid references public.matches(id) on delete set null;
+
+alter table public.reports
+add column if not exists reason text;
+
+alter table public.reports
+add column if not exists details text;
+
+alter table public.reports
+add column if not exists proof_file_path text;
+
+alter table public.reports
+add column if not exists status text not null default 'open';
+
+alter table public.reports
+add column if not exists moderation_notes text;
+
+alter table public.reports
+add column if not exists action_taken text;
+
+alter table public.reports
+add column if not exists reviewed_at timestamptz;
+
+alter table public.reports
+add column if not exists created_at timestamptz not null default now();
+
+create or replace function public.sync_report_legacy_columns()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  row_data jsonb;
+begin
+  row_data := to_jsonb(new);
+
+  if row_data ? 'reporter_id'
+     and row_data->>'reporter_id' is null
+     and row_data ? 'reporter_user_id' then
+    row_data := jsonb_set(row_data, '{reporter_id}', row_data->'reporter_user_id');
+  end if;
+
+  if row_data ? 'reported_id'
+     and row_data->>'reported_id' is null
+     and row_data ? 'reported_user_id' then
+    row_data := jsonb_set(row_data, '{reported_id}', row_data->'reported_user_id');
+  end if;
+
+  return jsonb_populate_record(new, row_data);
+end;
+$$;
+
+drop trigger if exists sync_report_legacy_columns_trigger on public.reports;
+create trigger sync_report_legacy_columns_trigger
+before insert or update on public.reports
+for each row
+execute function public.sync_report_legacy_columns();
+
+alter table public.reports enable row level security;
+
+grant select, insert on public.reports to authenticated;
+
+drop policy if exists "Users can create own reports" on public.reports;
+create policy "Users can create own reports"
+on public.reports
+for insert
+to authenticated
+with check (
+  auth.uid() is not null
+  and auth.uid() = reporter_user_id
+  and reporter_user_id <> reported_user_id
+);
+
+drop policy if exists "Users can read own reports" on public.reports;
+create policy "Users can read own reports"
+on public.reports
+for select
+to authenticated
+using (
+  auth.uid() = reporter_user_id
+);
+
+drop policy if exists "Users can upload report proof" on storage.objects;
+create policy "Users can upload report proof"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'verification-documents'
+  and (storage.foldername(name))[1] = 'reports'
+  and (storage.foldername(name))[2] = auth.uid()::text
+);
+
+drop policy if exists "Users can update own report proof" on storage.objects;
+create policy "Users can update own report proof"
+on storage.objects
+for update
+to authenticated
+using (
+  bucket_id = 'verification-documents'
+  and (storage.foldername(name))[1] = 'reports'
+  and (storage.foldername(name))[2] = auth.uid()::text
+)
+with check (
+  bucket_id = 'verification-documents'
+  and (storage.foldername(name))[1] = 'reports'
+  and (storage.foldername(name))[2] = auth.uid()::text
+);
 
 create or replace function public.create_match_on_mutual_like()
 returns trigger
@@ -317,12 +754,19 @@ as $$
     left join filter on true
     where p.id <> requesting_user_id
       and p.full_name is not null
+      and coalesce(p.is_banned, false) = false
       and p.verification_status = 'verified'
       and not exists (
         select 1
         from public.profile_actions pa
         where pa.actor_user_id = requesting_user_id
           and pa.target_user_id = p.id
+      )
+      and not exists (
+        select 1
+        from public.blocks b
+        where (b.blocker_user_id = requesting_user_id and b.blocked_user_id = p.id)
+           or (b.blocked_user_id = requesting_user_id and b.blocker_user_id = p.id)
       )
       and (filter.preferred_gender is null or p.gender = filter.preferred_gender)
       and (filter.min_age is null or p.age >= filter.min_age)

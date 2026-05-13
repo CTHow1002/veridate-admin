@@ -63,6 +63,9 @@ export default function DashboardClient() {
           <Link className="nav-link" href="/dashboard/reports">
             Reports
           </Link>
+          <Link className="nav-link" href="/dashboard/moderation">
+            Moderation
+          </Link>
           <button className="secondary-button" onClick={logout}>
             Sign Out
           </button>

@@ -14,6 +14,9 @@ export type Profile = {
   warning_message?: string | null;
   warning_details?: string | null;
   warned_at?: string | null;
+  is_deactivated?: boolean | null;
+  account_deletion_requested_at?: string | null;
+  account_deletion_scheduled_at?: string | null;
 };
 
 export type SignedFile = {
@@ -56,4 +59,41 @@ export type SafetyReport = {
   createdAt: string | null;
   reporter: Profile;
   reportedUser: Profile;
+};
+
+export type AccountDeletionStatus = "pending" | "processing" | "completed" | "failed" | "canceled";
+
+export type AccountDeletionRequest = {
+  id: string;
+  userId: string;
+  status: AccountDeletionStatus;
+  reason: string | null;
+  requestedAt: string;
+  scheduledDeleteAt: string;
+  processedAt: string | null;
+  canceledAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  profile: Profile | null;
+};
+
+export type ModerationStatus = "banned" | "warned";
+
+export type ModeratedUser = {
+  id: string;
+  fullName: string | null;
+  verificationStatus: string | null;
+  status: ModerationStatus;
+  isBanned: boolean;
+  banUntil: string | null;
+  banMessage: string | null;
+  banDetails: string | null;
+  warningMessage: string | null;
+  warningDetails: string | null;
+  warnedAt: string | null;
+  latestReportStatus: ReportStatus | null;
+  latestReportReason: string | null;
+  latestReportNotes: string | null;
+  latestReportReviewedAt: string | null;
 };

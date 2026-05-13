@@ -65,6 +65,9 @@ export default function ReportsClient() {
           <Link className="nav-link" href="/dashboard">
             Verification
           </Link>
+          <Link className="nav-link" href="/dashboard/moderation">
+            Moderation
+          </Link>
           <button className="secondary-button" onClick={logout}>
             Sign Out
           </button>
